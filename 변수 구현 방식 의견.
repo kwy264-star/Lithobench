@@ -1,0 +1,159 @@
+제공해주신 논문(**ARLO: Adaptive Reinforcement Learning for Lithography Optimization**, *Scientific Reports, 2026*)에서 다루는 5가지 핵심 지표의 정의와, 작성하신 파이썬 코드 구현 방식과의 일치 여부를 비교·분석한 내용입니다.
+
+---
+
+### 지표별 논문 정의 vs 작성 코드 비교
+
+**1. $L_2$ Loss**
+
+* **논문 정의**: $L_2 = \frac{1}{N^2} \sum_{x,y} (Z(x, y) - T(x, y))^2$ (식 10)
+
+
+* 전체 픽셀 패치 크기 $N \times N$으로 나누어 정규화된 MSE(Mean Squared Error) 형식을 취합니다.
+
+
+
+
+* **작성 코드**: `torch.mean((printed_nominal - target) ** 2)`
+* **비교 결과**: **완벽히 일치합니다.** 논문에서 패치 단위 정규화를 위해 $N^2$으로 나눈 평균 제곱 오차(MSE) 수식을 명시했으므로, 코드의 `torch.mean()`과 수학적으로 정확히 동일합니다.
+
+
+
+**2. PVB (Process Variation Band)**
+
+* **논문 정의**: $PVB = \frac{1}{N^2} \sum_{x,y} (Z_{max}(x, y) - Z_{min}(x, y))^2$ (식 11)
+
+
+* 공정 변동(극단적 Dose/Focus 조건)에서의 시뮬레이션 출력 이미지 $Z_{max}$와 $Z_{min}$ 사이의 차이를 제곱하여 평균을 낸 연속 값(Continuous Value)입니다.
+
+
+
+
+* **작성 코드**: `printed_max`와 `printed_min`을 $0.5$ 기준으로 이진화(`> 0.5`)한 뒤, 두 이진 마스크의 절대값 차이 평균(`diff.mean()`)을 구함.
+* **비교 결과**: **차이점 존재.** 논문은 연속적인 이미지 출력값의 차이 제곱합 평균(MSE)을 직접 연산하지만, 작성하신 코드는 $0.5$ Threshold를 통한 **이진화(Binarization)** 절차가 포함되어 있어 절단 오차(Thresholding Error)가 발생할 수 있습니다.
+
+
+
+**3. EPE (Edge Placement Error)**
+
+* **논문 정의**: $EPE = \sum_{i=1}^{N} (x_i - x_{target})^2$ (식 8) 또는 $L_{EPE} = \sum \vert{}C_{target} - C_{pred}\vert{} \cdot \nabla M$ (식 12)
+
+
+* 목표 패턴 경계($x_{target}$)와 실제 출력 패턴 경계($x_i$) 간의 에지 거리 오차를 측정합니다.
+
+
+
+
+* **작성 코드**: Sobel 필터로 타깃과 출력 이미지의 에지 점들을 추출하고, KD-Tree(`cKDTree`)를 사용해 에지 점 간의 **최근접 Euclidean 평균 거리**를 계산함.
+* **비교 결과**: **개념적으로 매우 유사하나 대리 지표(Proxy) 형태임.** 논문 수식이 단순 좌표 차이 제곱합으로 다소 간략하게 표현된 반면, 코드는 Sobel과 KD-Tree를 이용해 에지 간 실제 물리적 평균 거리를 구하고 있으므로, 논문의 EPE 개념을 매우 합리적으로 모사한 Proxy 역할을 수행합니다.
+
+
+
+**4. Shot Count (#Shots)**
+
+* **논문 정의**: $Shots = \sum_{i=1}^{N} \mathbb{1}(M_i > 0.5)$ (식 9)
+
+
+* ARLO 논문에서는 특이하게도 픽셀 단위 마스크 오파시티/투과율 표현에서 $0.5$보다 큰 **켜진 픽셀(On-pixels)의 단순 총합**으로 Shot Count 지표를 수식화하였습니다. (기존 LithoBench의 직사각형 분해 방식 대신 픽셀 이진 카운팅 수식을 제시함)
+
+
+
+
+* **작성 코드**: OpenCV의 `findContours`를 사용해 이진화된 외곽선 윤곽 점(Contour points)의 개수를 합산함.
+* **비교 결과**: **차이점 존재.** 코드 방식은 패턴의 꺾임점/윤곽 점 수(Contour Complexity)를 측정하는 반면, 본 ARLO 논문 식 9의 수식은 이진화된 켜진 픽셀 수의 합을 의미합니다.
+
+
+
+**5. Runtime**
+
+* **논문 정의**: RTX 3050/A100 GPU 환경에서 패치 1개($256 \times 256$)당 처리되는 소요 시간 (초 단위, `s / patch`).
+
+
+* U-Net 전전파시간과 RL 반복 정밀화(Refinement) 시간이 포함됨.
+
+
+
+
+* **작성 코드**: GPU 동기화(`torch.cuda.synchronize()`)를 걸고, 모델 100회 실행 시간의 평균을 구하여 밀리초(`ms`) 단위로 출력함.
+* **비교 결과**: **측정 방식이 매우 정확하며 스케일 단위만 차이남.** GPU 동기화를 고려한 측정이 정확히 구현되어 있으며, 출력 단위가 밀리초(`ms`)라는 점 외에는 논문의 `s / patch` 측정 방식과 부합합니다.
+
+
+
+---
+
+### 종합 의견
+
+작성하신 평가 코드는 전체적으로 딥러닝 기반 계산 리소그래피 평가 프레임워크의 틀을 잘 갖추고 있습니다.
+
+* **$L_2$ Loss 및 Runtime**: 논문의 정의와 완벽하게 부합하거나 스케일 단위만 상이한 수준입니다.
+
+
+* **PVB, EPE, Shot Count**: 논문 수식 대비 코드에서 **이진화 처리(PVB)**, **KD-Tree 기반 거리 측정(EPE)**, **Contour 기반 윤곽점 계산(Shot)** 등의 대리(Proxy) 함수가 적용되어 있습니다. 논문과 완전 동일한 스케일의 결과값을 도출하고자 한다면, PVB의 이진화 과정 제거 및 Shot Count 수식 기준 맞춤 수정을 검토해보실 수 있습니다.
+
+제공해주신 코드와 LithoBench 논문의 정의를 비교한 분석 결과입니다.
+
+코드 구현 방식은 **개념적으로 유사한 방향을 지향하지만, 세부 구현 방식에서 논문 원본의 표준 정의 및 공식 라이브러리와 상당한 차이**가 존재합니다.
+
+---
+
+### 지표별 논문 대비 구현 비교
+
+**1. $L_2$ Loss**
+
+* **논문 방식**: $\Vert{}Z_{nom} - T\Vert{}_2^2$ (Sum of Squared Errors)
+
+
+* **코드 구현**: `torch.mean((printed_nominal - target) ** 2)` (MSE - Mean Squared Error)
+* **차이점**: 논문은 픽셀 전체의 오차 제곱합($L_2$ norm 제곱)을 구하지만, 코드는 전체 픽셀 수로 나눈 평균(Mean)을 구합니다. 스케일(비율) 상의 차이만 있을 뿐 상대적 경향성은 비슷하게 유지됩니다.
+
+
+
+**2. PVB (Process Variation Band)**
+
+* **논문 방식**: $\Vert{}Z_{max} - Z_{min}\Vert{}_2^2$
+
+* **코드 구현**: `(printed_max > 0.5)` 및 `(printed_min > 0.5)`로 이진화 후 차이의 절대값 평균(`diff.mean()`)
+* **차이점**: 논문은 연속적인 이미지 값 간의 차이 제곱합을 계산하는 반면, 코드는 $0.5$ 기준 이진화(Binarization)를 거친 후 픽셀 불일치 비율을 계산합니다. 논문 기준보다 절단(Thresholding) 오차가 포함됩니다.
+
+
+
+**3. EPE (Edge Placement Error)**
+
+* **논문 방식**: 타깃 에지에 탐침 점(Probe points)을 찍고 레지스트 에지까지의 거리를 계산 후, 특정 Threshold를 초과하는 **Violation 개수**를 카운트.
+
+
+* **코드 구현**: Sobel 필터로 에지를 뽑은 뒤 KD-Tree(`cKDTree`)로 최근접 거리를 찾아 평균 거리(Mean distance)를 계산.
+* **차이점**: 논문은 EPE 제약 조건을 위반한 위반 횟수(Violations count)를 측정하지만, 코드는 **평균 에지 거리**를 측정합니다. 코드의 주석 및 출력 키 이름에 `EPE_proxy`라고 명시한 것처럼 실제 논문 스펙의 대리(Proxy) 지표 역할을 수행합니다.
+
+
+
+**4. Shot Count (#Shots)**
+
+* **논문 방식**: 생성된 마스크 패턴을 **Adaptive Rectangular Decomposition** 알고리즘(오픈소스 `adaptive-boxes` 라이브러리)을 이용해 직사각형 분해 후 총 개수 산출.
+
+
+* **코드 구현**: OpenCV의 `findContours`를 사용해 외각 윤곽점(Contour points)의 총 개수를 단순 합산.
+* **차이점**: 차이가 가장 큰 지표입니다. 논문의 #Shots는 마스크 제조(E-beam)용 직사각형 분해 개수를 뜻하지만, 코드의 방식은 윤곽선의 꺾임점 개수를 세는 방식이므로 실제 마스크 분해 샷 수와 직접적인 연관성이 떨어집니다.
+
+
+
+**5. Runtime**
+
+* **논문 방식**: GPU(RTX 3090) 환경에서 1장 이미지당 추론 시간을 초 단위(`s / image`)로 측정.
+
+
+* **코드 구현**: Warm-up 없이 바로 100회 순전파(Forward pass) 루프를 돌린 후, `torch.cuda.synchronize()`를 활용해 평균 ms 단위로 측정.
+* **차이점**: GPU 동기화(`synchronize()`) 처리 등 측정을 위한 기본 프레임은 잘 구성되어 있으나, 정확한 측정을 위해 루프 시작 전 GPU Warm-up 과정(예: 사전 dummy 추론 10회)을 추가하면 더욱 논문 스펙에 가까워집니다.
+
+---
+
+### 주요 요약
+
+* **$L_2$, Runtime**: 논문의 측정 방식과 거의 일치하며, 스케일 변환 외에는 표준적인 방식을 따르고 있습니다.
+
+
+* **PVB, EPE, Shot**: 논문에서 사용한 전용 라이브러리(`adaptive-boxes` 등)나 정확한 연산 규칙(EPE Violation 계산, Process Corner 간 $L_2$ 차이) 대신, 이미지 처리 기법(Sobel, Contour, Threshold)을 활용한 **대리(Proxy) 지표**로 구현되어 있습니다.
+
+
+
+실제 LithoBench 벤치마크 논문과 완전 동일한 결과를 내어 비교하려면 EPE Violation 카운팅 로직과 Rectangular Decomposition 라이브러리를 연동하여 수정하는 것을 추천합니다.
