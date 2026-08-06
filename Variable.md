@@ -118,6 +118,23 @@ variation
 논문 계산식 공개 X
 
 ---
+내흐름
+
+Target Pattern
+      ↓
+UNet(+Attention)
+      ↓
+Predicted Mask M
+      ↓
+Lithography Simulation
+      ↓
+Printed Images:
+  Znom (nominal)
+  Zmax (maximum process condition)
+  Zmin (minimum process condition)
+      ↓
+PVB:
+  Mean Squared Error between Zmax and Zmin
 
 # ③ EPE
 
