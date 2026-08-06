@@ -118,8 +118,21 @@ variation
 논문 계산식 공개 X
 
 ---
-내흐름
 
+## 전체 이미지 종류를 정리하면
+
+| 기호 | 의미                        | 생성 위치       |
+| -- | ------------------------- | ----------- |
+| T  | Target pattern (목표 패턴)    | Dataset     |
+| M  | Mask (예측한 마스크)            | UNet 출력     |
+| I  | Aerial image (광학 이미지)     | LithoSim 내부 |
+| Z  | Printed image (resist 결과) | LithoSim 출력 |
+
+
+# 현재 네 프로젝트 기준으로 기억해야 할 핵심 흐름
+
+
+```
 Target Pattern
       ↓
 UNet(+Attention)
@@ -135,6 +148,23 @@ Printed Images:
       ↓
 PVB:
   Mean Squared Error between Zmax and Zmin
+```
+
+그리고:
+
+[
+PVB=\frac{1}{N^2}\sum(Z_{max}-Z_{min})^2
+]
+
+---
+
+이제 EPE로 넘어가면 이 구조에서 마지막 단계만 바뀝니다.
+
+* PVB → **전체 픽셀 차이**
+* EPE → **패턴 edge 위치 차이**
+
+라고 생각하면 됩니다.
+
 
 # ③ EPE
 
