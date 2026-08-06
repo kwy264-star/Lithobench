@@ -196,6 +196,10 @@ Edge끼리 얼마나 떨어졌는가
 
 낮을수록 좋음
 
+EPE:
+
+Znom과 Target 비교
+
 # ④ Shot Count
 
 논문 의미
