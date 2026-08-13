@@ -916,3 +916,208 @@ train.py hash
 또 하나 중요한 점은 **현재 팀 코드의 `Seed=42 + shuffle`을 그대로 두면 새 명세의 frozen split 요구사항을 충족하지 못한다는 것**이야. 이건 단순한 개선사항이 아니라 **새 학습 설계에 맞추기 위해 수정해야 하는 부분**이다. 팀 코드의 현재 split 방식 자체는 13,342/1,482/1,648 숫자는 정확하지만, 고정 manifest 방식으로 바꾸는 게 맞다. 
 
 원한다면 다음 단계에서는 **팀원이 보내준 전체 코드에서 딱 필요한 부분만 수정해서 `새 Unet_only 최종 train.py` 형태로 통째로 정리**하면 된다. 기존 코드의 좋은 부분은 가져오되, 새 명세와 충돌하는 부분은 내가 제외해서 만들면 된다.
+
+네. 지금 상황에서는 **`split_manifest.csv`가 없는 것이 이상한 게 아닙니다.** 다만 새 `Unet_only` 명세를 엄격하게 적용하려면 우리가 먼저 **split을 고정하고 그 결과를 manifest(CSV)로 만들어야 합니다.**
+
+### 1. `split`한다는 의미
+
+전체 MetalSet 16,472개를 **학습에 사용할 그룹과 최종 평가에 사용할 그룹으로 나누고**, 그중 학습용 14,824개를 다시 학습/검증으로 나누는 것입니다.
+
+새 명세의 구조는 정확히:
+
+| 구분                    |     개수 | 용도                            |
+| --------------------- | -----: | ----------------------------- |
+| 전체 MetalSet           | 16,472 | 전체                            |
+| Train pool            | 14,824 | 학습 + 내부 검증                    |
+| ├ Training            | 13,342 | 실제 U-Net 가중치 학습               |
+| └ Internal validation |  1,482 | 매 epoch 성능 확인 및 `best.pt` 선택  |
+| Final holdout test    |  1,648 | **학습에 절대 사용하지 않음**, 나중에 최종 평가 |
+
+즉,
+
+```text
+전체 16,472
+│
+├── 14,824  ← 학습에 사용하는 pool
+│    ├── 13,342 ← 실제 training
+│    └──  1,482 ← validation
+│
+└── 1,648  ← final holdout
+```
+
+입니다.
+
+중요한 점은 **final holdout 1,648개를 validation에 쓰면 안 된다**는 것입니다.
+
+---
+
+### 2. Manifest가 뭐고 CSV가 뭐냐?
+
+쉽게 말하면 **"어떤 파일이 train이고, 어떤 파일이 validation이고, 어떤 파일이 final test인지 적어놓은 명단표"**입니다.
+
+CSV는 그냥 표 형태의 텍스트 파일입니다.
+
+예를 들어:
+
+```csv
+sample_id,target_path,mask_path,split
+sample_00001.png,target/sample_00001.png,pixelILT/sample_00001.png,train
+sample_00002.png,target/sample_00002.png,pixelILT/sample_00002.png,train
+...
+sample_13343.png,target/sample_13343.png,pixelILT/sample_13343.png,internal_validation
+...
+sample_14825.png,target/sample_14825.png,pixelILT/sample_14825.png,final_holdout_test
+```
+
+이런 식입니다.
+
+여기서 **manifest**는 "이 파일을 기준으로 데이터 구성을 고정한다"는 개념이고, **CSV는 그 manifest를 저장하는 방법 중 하나**입니다.
+
+즉,
+
+> `split_manifest.csv` = 데이터 split 결과를 저장한 명단 파일
+
+이라고 이해하면 됩니다.
+
+새 학습 명세에서도 primary 학습은 **검증된 frozen split manifest를 입력으로 사용**하도록 되어 있습니다. 
+
+---
+
+## 3. 그런데 현재 MetalSet에 `split_manifest.csv`가 없다?
+
+**그렇다면 지금 바로 새 train을 실행하면 안 됩니다.**
+
+이게 오히려 지금 발견한 중요한 부분입니다.
+
+예전에 우리가 만든 코드에는 이런 방식이 있었습니다.
+
+```python
+train_pool_indices = list(range(TRAIN_POOL_COUNT))
+
+split_rng = random.Random(SEED)
+split_rng.shuffle(train_pool_indices)
+
+train_indices = train_pool_indices[:TRAIN_COUNT]
+
+internal_val_indices = train_pool_indices[
+    TRAIN_COUNT:
+    TRAIN_COUNT + INTERNAL_VAL_COUNT
+]
+```
+
+즉 **실행할 때 Seed 42로 14,824개를 섞어서**
+
+```text
+13,342 → train
+1,482  → validation
+```
+
+을 만들었습니다.
+
+그리고 마지막 1,648개는 final test로 고정했습니다.
+
+이 방식 자체는 Seed 42를 고정하면 재현할 수 있지만, **새 `Unet_only` 명세에서 요구하는 수준의 "frozen split manifest"와는 다릅니다.**
+
+---
+
+# 그래서 지금 해야 할 일
+
+우리가 새 `Unet_only` 기준을 **무조건 1순위**로 두기로 했으므로, 기존 train 코드를 바로 돌리는 것보다 먼저:
+
+### STEP 1
+
+현재 MetalSet의 실제 파일 목록을 읽습니다.
+
+```text
+MetalSet/
+├── target/
+└── pixelILT/
+```
+
+그리고 target/pixelILT의 대응 관계를 확인합니다.
+
+### STEP 2
+
+전체 16,472개를 확인합니다.
+
+```text
+16,472개
+```
+
+### STEP 3
+
+**Seed 42라는 현재 공통 기준으로 split을 한 번 생성합니다.**
+
+```text
+13,342 train
+1,482 internal_validation
+1,648 final_holdout_test
+```
+
+### STEP 4
+
+그 결과를 파일로 저장합니다.
+
+예:
+
+```text
+MetalSet/
+├── target/
+├── pixelILT/
+└── split_manifest.csv   ← 새로 생성
+```
+
+### STEP 5
+
+이 `split_manifest.csv`의 SHA-256을 계산합니다.
+
+그러면 이후 4명이 각각
+
+```text
+VS Code
+Kaggle
+Colab
+```
+
+에서 학습해도 **같은 manifest를 사용**할 수 있습니다.
+
+즉 4명 모두:
+
+```text
+같은 sample A → train
+같은 sample B → validation
+같은 sample C → final holdout
+```
+
+가 보장됩니다.
+
+---
+
+## 특히 중요한 점 하나
+
+현재 팀원이 보낸 코드에서는 제가 확인한 것처럼 **공식 `filesMaskOpt()` 결과를 이용하고, 14,824 / 1,482 / 1,648 구조를 사용하려고 하고 있습니다.** 
+
+하지만 그것과 **새 명세의 frozen manifest 방식은 완전히 같은 것은 아닙니다.**
+
+따라서 우리가 최종 `train.py`를 만들 때는:
+
+> ❌ train.py 안에서 매번 split을 새로 생성
+
+이 아니라
+
+> ✅ `split_manifest.csv`를 읽어서 **그 명단 그대로 train/validation을 구성**
+
+하도록 만드는 것이 새 명세에 더 정확합니다.
+
+---
+
+### 결론
+
+현재 상태를 한 줄로 정리하면:
+
+**`split_manifest.csv`가 없는 것은 문제라기보다, 아직 우리가 만들어야 하는 단계가 남아 있는 상태입니다.**
+
+그리고 **지금은 train을 시작하기 전에 이 manifest부터 만드는 게 맞습니다.**
+
+원하면 다음 단계에서 제가 **현재 네 MetalSet 폴더 구조를 기준으로 `split_manifest.csv`를 자동 생성하고, SHA-256까지 출력하는 별도의 `make_split_manifest.py`**를 먼저 만들어드릴게요. 그 다음 그 manifest를 읽는 최종 `Unet_only train.py`를 만드는 순서가 가장 안전합니다.
+
